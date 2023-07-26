@@ -2,6 +2,8 @@
 
 import pickle
 import collections
+import sys
+import traceback
 
 import torch
 import numpy
@@ -9,10 +11,7 @@ import _codecs
 import zipfile
 import re
 
-
 # PyTorch 1.13 and later have _TypedStorage renamed to TypedStorage
-from modules import errors
-
 TypedStorage = torch.storage.TypedStorage if hasattr(torch.storage, 'TypedStorage') else torch.storage._TypedStorage
 
 def encode(*args):
@@ -41,7 +40,7 @@ class RestrictedUnpickler(pickle.Unpickler):
             return getattr(collections, name)
         if module == 'torch._utils' and name in ['_rebuild_tensor_v2', '_rebuild_parameter', '_rebuild_device_tensor_from_numpy']:
             return getattr(torch._utils, name)
-        if module == 'torch' and name in ['FloatStorage', 'HalfStorage', 'IntStorage', 'LongStorage', 'DoubleStorage', 'ByteStorage', 'float32', 'BFloat16Storage']:
+        if module == 'torch' and name in ['FloatStorage', 'HalfStorage', 'IntStorage', 'LongStorage', 'DoubleStorage', 'ByteStorage', 'float32']:
             return getattr(torch, name)
         if module == 'torch.nn.modules.container' and name in ['ParameterDict']:
             return getattr(torch.nn.modules.container, name)
@@ -96,16 +95,16 @@ def check_pt(filename, extra_handler):
 
     except zipfile.BadZipfile:
 
-        # if it's not a zip file, it's an old pytorch format, with five objects written to pickle
+        # if it's not a zip file, it's an olf pytorch format, with five objects written to pickle
         with open(filename, "rb") as file:
             unpickler = RestrictedUnpickler(file)
             unpickler.extra_handler = extra_handler
-            for _ in range(5):
+            for i in range(5):
                 unpickler.load()
 
 
 def load(filename, *args, **kwargs):
-    return load_with_extra(filename, *args, extra_handler=global_extra_handler, **kwargs)
+    return load_with_extra(filename, extra_handler=global_extra_handler, *args, **kwargs)
 
 
 def load_with_extra(filename, extra_handler=None, *args, **kwargs):
@@ -137,20 +136,17 @@ def load_with_extra(filename, extra_handler=None, *args, **kwargs):
             check_pt(filename, extra_handler)
 
     except pickle.UnpicklingError:
-        errors.report(
-            f"Error verifying pickled file from {filename}\n"
-            "-----> !!!! The file is most likely corrupted !!!! <-----\n"
-            "You can skip this check with --disable-safe-unpickle commandline argument, but that is not going to help you.\n\n",
-            exc_info=True,
-        )
+        print(f"Error verifying pickled file from {filename}:", file=sys.stderr)
+        print(traceback.format_exc(), file=sys.stderr)
+        print("-----> !!!! The file is most likely corrupted !!!! <-----", file=sys.stderr)
+        print("You can skip this check with --disable-safe-unpickle commandline argument, but that is not going to help you.\n\n", file=sys.stderr)
         return None
+
     except Exception:
-        errors.report(
-            f"Error verifying pickled file from {filename}\n"
-            f"The file may be malicious, so the program is not going to read it.\n"
-            f"You can skip this check with --disable-safe-unpickle commandline argument.\n\n",
-            exc_info=True,
-        )
+        print(f"Error verifying pickled file from {filename}:", file=sys.stderr)
+        print(traceback.format_exc(), file=sys.stderr)
+        print("\nThe file may be malicious, so the program is not going to read it.", file=sys.stderr)
+        print("You can skip this check with --disable-safe-unpickle commandline argument.\n\n", file=sys.stderr)
         return None
 
     return unsafe_torch_load(filename, *args, **kwargs)
@@ -194,3 +190,4 @@ with safe.Extra(handler):
 unsafe_torch_load = torch.load
 torch.load = load
 global_extra_handler = None
+

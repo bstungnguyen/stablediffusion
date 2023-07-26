@@ -4,7 +4,7 @@ import ast
 import copy
 
 from modules.processing import Processed
-from modules.shared import cmd_opts
+from modules.shared import opts, cmd_opts, state
 
 
 def convertExpr2Expression(expr):
@@ -77,7 +77,7 @@ return process_images(p)
         module.display = display
 
         indent = " " * indent_level
-        indented = code.replace('\n', f"\n{indent}")
+        indented = code.replace('\n', '\n' + indent)
         body = f"""def __webuitemp__():
 {indent}{indented}
 __webuitemp__()"""

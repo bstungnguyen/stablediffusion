@@ -1,13 +1,18 @@
 import os
-import threading
+import sys
+import traceback
 
-from modules import shared, errors, cache
-from modules.gitpython_hack import Repo
-from modules.paths_internal import extensions_dir, extensions_builtin_dir, script_path  # noqa: F401
+import time
+from datetime import datetime
+import git
+
+from modules import shared
+from modules.paths_internal import extensions_dir, extensions_builtin_dir, script_path
 
 extensions = []
 
-os.makedirs(extensions_dir, exist_ok=True)
+if not os.path.exists(extensions_dir):
+    os.makedirs(extensions_dir)
 
 
 def active():
@@ -20,9 +25,6 @@ def active():
 
 
 class Extension:
-    lock = threading.Lock()
-    cached_fields = ['remote', 'commit_date', 'branch', 'commit_hash', 'version']
-
     def __init__(self, name, path, enabled=True, is_builtin=False):
         self.name = name
         self.path = path
@@ -37,55 +39,37 @@ class Extension:
         self.remote = None
         self.have_info_from_repo = False
 
-    def to_dict(self):
-        return {x: getattr(self, x) for x in self.cached_fields}
-
-    def from_dict(self, d):
-        for field in self.cached_fields:
-            setattr(self, field, d[field])
-
     def read_info_from_repo(self):
         if self.is_builtin or self.have_info_from_repo:
             return
 
-        def read_from_repo():
-            with self.lock:
-                if self.have_info_from_repo:
-                    return
+        self.have_info_from_repo = True
 
-                self.do_read_info_from_repo()
-
-                return self.to_dict()
-
-        d = cache.cached_data_for_file('extensions-git', self.name, os.path.join(self.path, ".git"), read_from_repo)
-        self.from_dict(d)
-        self.status = 'unknown'
-
-    def do_read_info_from_repo(self):
         repo = None
         try:
             if os.path.exists(os.path.join(self.path, ".git")):
-                repo = Repo(self.path)
+                repo = git.Repo(self.path)
         except Exception:
-            errors.report(f"Error reading github repository info from {self.path}", exc_info=True)
+            print(f"Error reading github repository info from {self.path}:", file=sys.stderr)
+            print(traceback.format_exc(), file=sys.stderr)
 
         if repo is None or repo.bare:
             self.remote = None
         else:
             try:
+                self.status = 'unknown'
                 self.remote = next(repo.remote().urls, None)
-                commit = repo.head.commit
-                self.commit_date = commit.committed_date
+                head = repo.head.commit
+                self.commit_date = repo.head.commit.committed_date
+                ts = time.asctime(time.gmtime(self.commit_date))
                 if repo.active_branch:
                     self.branch = repo.active_branch.name
-                self.commit_hash = commit.hexsha
-                self.version = self.commit_hash[:8]
+                self.commit_hash = head.hexsha
+                self.version = f'{self.commit_hash[:8]} ({ts})'
 
-            except Exception:
-                errors.report(f"Failed reading extension data from Git repository ({self.name})", exc_info=True)
+            except Exception as ex:
+                print(f"Failed reading extension data from Git repository ({self.name}): {ex}", file=sys.stderr)
                 self.remote = None
-
-        self.have_info_from_repo = True
 
     def list_files(self, subdir, extension):
         from modules import scripts
@@ -103,7 +87,7 @@ class Extension:
         return res
 
     def check_updates(self):
-        repo = Repo(self.path)
+        repo = git.Repo(self.path)
         for fetch in repo.remote().fetch(dry_run=True):
             if fetch.flags != fetch.HEAD_UPTODATE:
                 self.can_update = True
@@ -125,7 +109,7 @@ class Extension:
         self.status = "latest"
 
     def fetch_and_reset_hard(self, commit='origin'):
-        repo = Repo(self.path)
+        repo = git.Repo(self.path)
         # Fix: `error: Your local changes to the following files would be overwritten by merge`,
         # because WSL2 Docker set 755 file permissions instead of 644, this results to the error.
         repo.git.fetch(all=True)
